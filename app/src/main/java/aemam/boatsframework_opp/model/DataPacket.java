@@ -8,9 +8,9 @@ import java.io.Serializable;
 public class DataPacket implements Serializable {
     
     String filename;
-    int fileLength;
+    long fileLength;
     byte[] data;
-    public DataPacket(String filename, int fileLength, byte[] data) {
+    public DataPacket(String filename, long fileLength, byte[] data) {
         this.filename = filename;
         this.fileLength = fileLength;
         this.data = data;
@@ -20,7 +20,7 @@ public class DataPacket implements Serializable {
         return data;
     }
 
-    public int getFileLength() {
+    public long getFileLength() {
         return fileLength;
     }
 

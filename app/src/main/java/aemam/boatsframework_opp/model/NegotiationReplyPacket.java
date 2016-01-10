@@ -9,46 +9,72 @@ import java.util.ArrayList;
 
 /*                          Negotiation reply packet format
  * --------------------------------------------------------------------------------
- * | Should send |                      Bundle ID 1                               |
+ * |                 Bundle ID 1       |   Status of bundle   |       offset      |
  * --------------------------------------------------------------------------------
  * |                                   ......                                     |
  * --------------------------------------------------------------------------------
  */
 public class NegotiationReplyPacket implements Serializable{
+    public final byte DONTSEND = 0;
+    public final byte SEND = 1;
+    public final byte SENDMETADATA = 2;
 
-    ArrayList<String> bundleIds;
-    /**
-     * 0 -> don't send it
-     * 1 -> Send it
-     * 2 -> send meta-data only
-     */
-    ArrayList<Byte> sendIt;
+    ArrayList<NegotiationReplyEntry> negotiationReplyEntries;
+
+
     public NegotiationReplyPacket(){
-        this.bundleIds = new ArrayList<>();
-        this.sendIt = new ArrayList<>();
+        this.negotiationReplyEntries = new ArrayList<>();
+
     }
-    public void addBundle(String filename, Byte sendIt){
-        this.bundleIds.add(filename);
-        this.sendIt.add(sendIt);
+    public void addEntry(NegotiationReplyEntry negotiationReplyEntry){
+//        this.bundleIds.add(filename);
+//        this.sendIt.add(sendIt);
+        this.negotiationReplyEntries.add(negotiationReplyEntry);
     }
 
-    public ArrayList<String> getBundleIds() {
-        return bundleIds;
+//    public ArrayList<String> getBundleIds() {
+//        return bundleIds;
+//    }
+//
+//    public ArrayList<Byte> getSendIt() {
+//        return sendIt;
+//    }
+
+
+    public ArrayList<NegotiationReplyEntry> getNegotiationReplyEntries() {
+        return negotiationReplyEntries;
     }
 
-    public ArrayList<Byte> getSendIt() {
-        return sendIt;
-    }
-
-    public class NegotiationReplyEntry implements Serializable{
+    public static class NegotiationReplyEntry implements Serializable{
         String bundleId;
+        /**
+         * 0 -> don't send it
+         * 1 -> Send it
+         * 2 -> send meta-data only
+         */
         byte status;
-        int offset;
-        public NegotiationReplyEntry(String bundleId, byte status, int offset){
+        long offset;
+        public NegotiationReplyEntry(String bundleId, byte status, long offset){
             this.bundleId = bundleId;
             this.status = status;
             this.offset = offset;
         }
 
+        public String getBundleId() {
+            return bundleId;
+        }
+
+        public byte getStatus() {
+            return status;
+        }
+
+        public long getOffset() {
+            return offset;
+        }
+
+        @Override
+        public String toString() {
+            return this.bundleId+"|"+this.status+"|"+this.offset;
+        }
     }
 }

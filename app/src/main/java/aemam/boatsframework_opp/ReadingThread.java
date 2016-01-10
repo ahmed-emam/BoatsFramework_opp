@@ -69,7 +69,7 @@ public class ReadingThread extends Thread {
             try {
                 ObjectInput deSerializeObject = new ObjectInputStream(inputStream);
                 Packet readPacket = (Packet) deSerializeObject.readObject();
-                debug("[READING] GOT "+readPacket.toString(), INFO);
+//                debug("[READING] GOT "+readPacket.toString(), INFO);
                 incomingPackets.put(readPacket);
 
             }  catch(ClassNotFoundException exp){

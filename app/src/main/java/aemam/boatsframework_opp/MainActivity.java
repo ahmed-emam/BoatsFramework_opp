@@ -44,7 +44,6 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
-import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.Scanner;
 import java.util.Set;
@@ -284,7 +283,7 @@ public class MainActivity extends AppCompatActivity {
      * Function that write 'message' to the log file
      * @param message
      */
-    public static synchronized void log(String message) {
+    public synchronized void log(String message) {
         StringBuilder log_message = new StringBuilder(26 + message.length());
         log_message.append(getTimeStamp());
         log_message.append(": ");
@@ -365,21 +364,39 @@ public class MainActivity extends AppCompatActivity {
     }
     /**
      * Return the bundle with file name "fileName"
-     * @param fileName
+     * @param bundleID
      * @return
      */
-    public Bundle getBundle(String fileName){
+    public Bundle getBundle(String bundleID){
         for(int i = 0; i < Bundles_repo.size(); i++){
             Bundle theOppBundle = Bundles_repo.get(i);
-            String file_name = theOppBundle.getFileName();
+            String file_name = theOppBundle.getBundleID();
 
-            if(file_name.equals(fileName)){
+            if(file_name.equals(bundleID)){
                 return theOppBundle;
             }
         }
         return null;
     }
+    public boolean removeBundle(String bundleID){
+        File f = new File(rootDir+bundleID);
+        if(f.exists())
+            f.delete();
 
+        return Bundles_repo.remove(bundleID);
+    }
+    public synchronized void addBundle(Bundle theBundle){
+        Bundles_repo.add(theBundle);
+    }
+
+    public synchronized void addBundleToQueue(Bundle theBundle){
+        for(Bundle bundle: Bundles_queue){
+            if(bundle.isEqual(theBundle)){
+                return;
+            }
+        }
+        Bundles_queue.add(theBundle);
+    }
     /**
      * Synchronized function to add the thread responsible for communication with nodeID "node"
      * @param thread    Communication thread
@@ -531,7 +548,10 @@ public class MainActivity extends AppCompatActivity {
         c.setAccuracy(Criteria.ACCURACY_FINE);
         c.setPowerRequirement(Criteria.NO_REQUIREMENT);
         String provider = gps.getBestProvider(c, false);
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                        != PackageManager.PERMISSION_GRANTED) {
 
             //    ActivityCompat#requestPermissions
             // here to request the missing permissions, and then overriding
@@ -588,7 +608,10 @@ public class MainActivity extends AppCompatActivity {
         // Disconnect from GPS updates
         LocationManager gps;
         gps = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                        != PackageManager.PERMISSION_GRANTED) {
 
             //    ActivityCompat#requestPermissions
             // here to request the missing permissions, and then overriding
@@ -611,12 +634,12 @@ public class MainActivity extends AppCompatActivity {
         for(int i = 0; i < Bundles_repo.size(); i++) {
 
             Bundle theBundle = Bundles_repo.get(i);
-            log("File Name:"+theBundle.getFileName()+
+            log("File Name:"+theBundle.getBundleID()+
                     "\tDelivered: "+ (theBundle.isDelivered()? "Yes":"No")+
                     "\tDestination:"+theBundle.getDestination()
                     +"\tSource:"+theBundle.getSource());
 
-            debug("File Name:"+theBundle.getFileName()+
+            debug("File Name:"+theBundle.getBundleID()+
                     "\tDelivered: "+ (theBundle.isDelivered()? "Yes":"No")+
                     "\tDestination:"+theBundle.getDestination()
                     +"\tSource:"+theBundle.getSource());
@@ -743,8 +766,11 @@ public class MainActivity extends AppCompatActivity {
 //        oppBundles_repo.add(newBundle);
 //        oppBundles_queue.add(newBundle);
 
-        newBundle = new Bundle(9,7, "10M_20141111_140119.txt", DEVICE_ID);
 
+        newBundle = new Bundle(9,7, "10M_20141111_140119.txt", DEVICE_ID);
+        File f = new File(rootDir+"10M_20141111_140119.txt");
+        if(f.exists())
+            newBundle.setBundleSize(f.length());
 //        newBundle.set_checkSum(hashFile("10M_20141111_140119.txt", "MD5"));
 
         Bundles_repo.add(newBundle);
@@ -779,7 +805,8 @@ public class MainActivity extends AppCompatActivity {
 //        oppBundles_queue.add(newBundle);
 
         newBundle = new Bundle(9,7, "10M_20141111_140119.txt", DEVICE_ID);
-
+        File file = new File(rootDir + "10M_20141111_140119.txt");
+        newBundle.setBundleSize(file.length());
 //        newBundle.set_checkSum(hashFile("10M_20141111_140119.txt", "MD5"));
 
         Bundles_repo.add(newBundle);
@@ -879,6 +906,14 @@ public class MainActivity extends AppCompatActivity {
 
 //
     }
+    public void disconnect(View v){
+        for(int i = 0; i < connectionThreads.length; i++){
+            if(connectionThreads[i] != null){
+                connectionThreads[i].cancel();
+                connectionThreads[i] = null;
+            }
+        }
+    }
     public void newExperiment(View v){
 
         debug("===========Starting a NEW EXPERIMENT===========");
@@ -923,7 +958,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-//    `
     }
 
     @Override
@@ -1064,69 +1098,6 @@ public class MainActivity extends AppCompatActivity {
                             lineScanner.nextLine();
                             newExperiment();
                         }
-
-//                        else if(newCommand.contains("remove")){
-//                            lineScanner.next();
-//                            if(!lineScanner.hasNextInt())
-//                            {
-//                                sendToCommandCenter("You didn't type in a destination node and nextHop");
-//                                continue;
-//                            }
-//                            int destNode = lineScanner.nextInt();
-//                            if(!lineScanner.hasNextInt())
-//                            {
-//                                sendToCommandCenter("You didn't type in a destination node");
-//                                continue;
-//                            }
-//                            int nextHop = lineScanner.nextInt();
-//                            removeRoute(destNode, nextHop);
-//                        }
-//
-//                        else if(newCommand.contains("add")){
-//                            lineScanner.next();
-//                            if(!lineScanner.hasNextInt())
-//                            {
-//                                sendToCommandCenter("add <DestID> <NextHop> <cost>");
-//                                continue;
-//                            }
-//                            int destNode = lineScanner.nextInt();
-//                            if(!lineScanner.hasNextInt())
-//                            {
-//                                sendToCommandCenter("You didn't type in a nextHop and cost");
-//                                continue;
-//                            }
-//                            int nextHop = lineScanner.nextInt();
-//                            int cost = lineScanner.nextInt();
-//                            addRoute(destNode, new Route(nextHop, cost));
-//                        }
-//                        else if(newCommand.contains("rm")){
-//                            File f = new File((MainActivity.rootDir + "File/" +"5MB"));
-//
-//                            if(f.exists()) {
-//                                log("File size before deleting: "+f.length());
-//                                f.delete();
-//                                sendToCommandCenter(MainActivity.rootDir + "File/5MB" + " has successfully been deleted");
-//                            }
-//                        }
-//                        else if(newCommand.contains("del")){
-//                            lineScanner.next();
-//                            if(lineScanner.hasNextInt()) {
-//                                int node = lineScanner.nextInt();
-////                            lineScanner.next();
-//                                int nextHop = findRoute(node);
-//                                debug("Sending DELETE Packet to "+node+" via "+nextHop);
-//                                if(nextHop != -1) {
-//                                    WorkerThread thread = mainActivity.getWorkingThread(nextHop);
-//                                    if(thread != null){
-//                                        thread.sendDeletePacket(node);
-//                                    }
-//                                }
-//                            }
-//                            else{
-//                                sendToCommandCenter("Invalid command");
-//                                lineScanner.nextLine();
-//                            }
-//                        }
                         else{
                             debug("Invalid command");
                             commandCenterOutputStream.write((lineScanner.nextLine() +
@@ -1216,7 +1187,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         for(Bundle theBundle : Bundles_nodes_mapping.keySet()){
-            Log.i(TAG, theBundle.getFileName());
+            Log.i(TAG, theBundle.getBundleID());
             for(Integer nodeId : Bundles_nodes_mapping.get(theBundle))
                 Log.i(TAG, nodeId.toString());
         }

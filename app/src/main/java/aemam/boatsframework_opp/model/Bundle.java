@@ -14,8 +14,8 @@ public class Bundle implements Serializable{
     private volatile int myID = 0;
     private int source = 0;         //Node that produced the bundle
     private int destination = 0;    //Node that should receive the bundle
-    private String fileName;        //Data of the bundle
-
+    private String bundleID;        //Data of the bundle
+    private long bundleSize;
     /**
      * For trajectory
      */
@@ -27,9 +27,10 @@ public class Bundle implements Serializable{
     private ArrayList<Long> waitingDelay;   //Delay that represent
     private volatile long start_recv_time;   //TimeStamp of when I received the first data packet of the file
     private volatile long end_recv_time;     //TimeStamp of when I received the last data packet of the file
+    private volatile long bytesReceived;
 
     private String checkSum;        //CheckSum of the file to check for successful data transfer
-    private volatile boolean isDelivered;
+    private boolean isDelivered;
 
     private long disconnect_time_start;
     private long disconnect_time_end;
@@ -41,8 +42,8 @@ public class Bundle implements Serializable{
     private long scan_time_end;
 
 
-    public String getFileName(){
-        return fileName;
+    public String getBundleID(){
+        return bundleID;
     }
     public int getSource() {
         return source;
@@ -92,6 +93,12 @@ public class Bundle implements Serializable{
     public long getScan_time_end() {
         return scan_time_end;
     }
+    public long getBytesReceived() {
+        return bytesReceived;
+    }
+    public long getBundleSize() {
+        return bundleSize;
+    }
 
     /**
      *
@@ -103,7 +110,7 @@ public class Bundle implements Serializable{
         this.myID = id;
         source = sourceNodeID;
         destination = destinationNodeID;
-        fileName = filename;
+        bundleID = filename;
         nodes = new ArrayList<>();
         transferTime = new ArrayList<>();
         connectionEstablishment = new ArrayList<>();
@@ -111,13 +118,14 @@ public class Bundle implements Serializable{
         disconnectTime = new ArrayList<>();
         start_recv_time = -1;
         end_recv_time = -1;
+        bytesReceived = 0;
         checkSum = "";
         isDelivered = false;
     }
 
     public Bundle(String filename, int id){
         this.myID = id;
-        fileName = filename;
+        bundleID = filename;
         source = -1;
         destination = -1;
         nodes = new ArrayList<>();
@@ -127,6 +135,7 @@ public class Bundle implements Serializable{
         disconnectTime = new ArrayList<>();
         start_recv_time = -1;
         end_recv_time = -1;
+        bytesReceived = 0;
         checkSum = "";
         isDelivered = false;
     }
@@ -150,6 +159,15 @@ public class Bundle implements Serializable{
     public void setDisconnectTime(ArrayList<Long> disconnectTime) {
         this.disconnectTime = disconnectTime;
     }
+
+    public void setBytesReceived(long bytesReceived) {
+        this.bytesReceived = bytesReceived;
+    }
+
+    public void setBundleSize(long bundleSize) {
+        this.bundleSize = bundleSize;
+    }
+
     public void setTransferTime(ArrayList<Long> transferTime) {
         this.transferTime = transferTime;
     }
@@ -192,7 +210,7 @@ public class Bundle implements Serializable{
     public void setScan_time_end(long scan_time_end) {
         this.scan_time_end = scan_time_end;
     }
-    public void setTransferTimeStamp(long start, long end){
+    public void setTransferTimeStamp(long end){
         for(int i = 0; i < nodes.size(); i++){
             if(nodes.get(i) == this.myID){
                 /**
@@ -200,7 +218,7 @@ public class Bundle implements Serializable{
                  *
                  */
                 int index = i*2;
-                transferTime.set(index, start);
+
                 transferTime.set(index+1, end);
 //                long oldTime = transferTime.get(i);
 //                MainActivity.debug("Old duration "+oldTime);
@@ -223,7 +241,7 @@ public class Bundle implements Serializable{
         bundle += "\nDelivered:"+ (this.isDelivered? "Yes":"No");
         bundle += "\nSource:"+source;
         bundle += "\nDestination:"+destination;
-        bundle += "\nFile name: "+fileName;
+        bundle += "\nFile name: "+ bundleID;
         bundle += "\nNodes:\t";
         for(int i = 0; i < nodes.size(); i++)
             bundle += nodes.get(i)+"\t";
@@ -257,7 +275,7 @@ public class Bundle implements Serializable{
             return false;
         if(this.destination != other.destination)
             return false;
-        return this.fileName.equals(other.fileName);
+        return this.bundleID.equals(other.bundleID);
 
     }
 

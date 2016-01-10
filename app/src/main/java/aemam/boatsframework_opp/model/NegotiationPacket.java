@@ -9,8 +9,6 @@ import java.util.ArrayList;
      * --------------------------------------------------------------------
      * |Packet Length (int)|Source Node ID (int)|Destination Node ID (int)|
      * --------------------------------------------------------------------
-     * | Opp neg TAG BYTE (byte) | Number of bundles in negotiation (int) |
-     * --------------------------------------------------------------------
      * | isDelivered |              Bundle ID 1                           |
      * --------------------------------------------------------------------
      * | isDelivered |              Bundle ...                            |

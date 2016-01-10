@@ -1,26 +1,24 @@
 package aemam.boatsframework_opp;
 
+import android.text.style.DynamicDrawableSpan;
 import android.util.Log;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
 import java.io.OptionalDataException;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.io.StreamCorruptedException;
+
 import java.lang.reflect.Array;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
@@ -29,6 +27,7 @@ import aemam.boatsframework_opp.model.Bundle;
 import aemam.boatsframework_opp.model.DataPacket;
 import aemam.boatsframework_opp.model.NegotiationPacket;
 import aemam.boatsframework_opp.model.NegotiationReplyPacket;
+import aemam.boatsframework_opp.model.NegotiationReplyPacket.NegotiationReplyEntry;
 import aemam.boatsframework_opp.model.Packet;
 
 /**
@@ -37,6 +36,19 @@ import aemam.boatsframework_opp.model.Packet;
  * Consumes messages from the queue "buffer" and implement logic for device to device data transfer
  *
  **/
+
+/**
+ * Version 2.0 Dev started on 1/3/16
+ * This version supports bundle transfer resume.
+ * If the bundle wasn't successfully sent, the peers will resume bundle transfer next time they meet,
+ * or if they met another peer that owns the same bundle
+ */
+
+
+
+/**
+ * TODO: Solve corner case, if connection terminated right after meta-data was exchanged
+ */
 
 public class WorkerThread extends Thread {
     /*****************************
@@ -72,8 +84,20 @@ public class WorkerThread extends Thread {
      */
 
 
+    /******************************************
+     *       TimeStamps for Trajectory
+     ******************************************
+     */
+    private long disconnectDelay = 0L;
+    private long connectionDelay = 0L;
+    private long waitingDelay = 0L;
+    /******************************************
+     *       TimeStamps for Trajectory
+     ******************************************
+     */
+
     private static final String TAG = "Connection_Manager";
-    InputStream inputStream;
+
     OutputStream outputStream;
 
     int device_Id = 0;
@@ -91,8 +115,9 @@ public class WorkerThread extends Thread {
 
     long connectionEstablishment = 0L;
     MainActivity mainActivity;
-    Queue<Bundle> filesToSend;
-    Queue<Bundle> filesToReceive;
+    //    Queue<Bundle> filesToSend;
+    Queue<NegotiationReplyEntry> filesToSend;
+    Queue<String> filesToReceive;
 
     boolean gotNegotiation = false;
     boolean negotiated = false;
@@ -145,23 +170,23 @@ public class WorkerThread extends Thread {
                 Packet packet = incomingPackets.take();
 //                debug(packet.toString(), INFO);
 
-                if (MainActivity.DEVICE_ID == packet.getDestId()) {
+                if (mainActivity.DEVICE_ID == packet.getDestId()) {
                     byte packetType = packet.getType();
                     //Switch on Packet type
                     switch (packetType) {
                         case DATA:
                             ObjectInputStream objectInputStream = new ObjectInputStream(new ByteArrayInputStream(packet.payload));
                             DataPacket dataPacket = (DataPacket) objectInputStream.readObject();
-                            debug(dataPacket.toString(), INFO);
+//                            debug(dataPacket.toString(), INFO);
 
                             String fileName = dataPacket.getFilename();
                             File f = new File((MainActivity.rootDir + dataPacket.getFilename()));
                             if(!f.exists()){
                                 log("Receiving file:" + fileName);
-
-                                Bundle theBundle = mainActivity.getBundle(fileName);
-                                debug(theBundle.toString(), DEBUG);
-                                theBundle.set_start_recv_time(System.currentTimeMillis());
+                                debug("Receiving  "+fileName, INFO);
+//                                Bundle theBundle = mainActivity.getBundle(fileName);
+//                                debug(theBundle.toString(), DEBUG);
+//                                theBundle.set_start_recv_time(System.currentTimeMillis());
                             }
 
                             FileOutputStream fileOutputStream = new FileOutputStream(f, true);
@@ -169,6 +194,11 @@ public class WorkerThread extends Thread {
 
                             fileOutputStream.write(dataPacket.getData(), 0, packet.getLength());
                             fileOutputStream.close();
+
+                            Bundle theBundle = mainActivity.getBundle(dataPacket.getFilename());
+                            if(theBundle != null)
+                                theBundle.setBytesReceived(theBundle.getBytesReceived()
+                                        +packet.getLength());
 
 
                             //I received the whole file
@@ -179,21 +209,21 @@ public class WorkerThread extends Thread {
                                 log("File " + fileName + " is received");
 
                                 //If this is an opportunistic data packet
-
-
-                                Bundle theBundle = mainActivity.getBundle(fileName);
-                                theBundle.set_end_recv_time(System.currentTimeMillis());
+                                theBundle.set_end_recv_time(t_receive_end);
 
                                 //Edit data transfer duration
                                 long transferTime = theBundle.getEnd_recv_time() -
                                         theBundle.getStart_recv_time();
-
+                                if((f.length() >= theBundle.getBundleSize()) &&
+                                        theBundle.getDestination() == mainActivity.DEVICE_ID)
+                                    theBundle.delivered();
                                 debug("Transfer took " + transferTime, INFO);
-                                theBundle.setTransferTimeStamp(theBundle.getStart_recv_time(),
-                                        theBundle.getEnd_recv_time());
+//                                theBundle.setTransferTimeStamp(
+//                                        theBundle.getEnd_recv_time());
+                                theBundle.addTransferTimeStamp(t_receive_end);
 
                                 //Remove this bundle from the bundles to be received queue
-                                filesToReceive.remove(theBundle);
+                                filesToReceive.remove(theBundle.getBundleID());
 
 //                                mainActivity.Bundles_nodes_mapping.get(theBundle).add(device_Id);
 //                                mainActivity.Bundles_repo.add(theBundle);
@@ -211,6 +241,7 @@ public class WorkerThread extends Thread {
                                 //Send data successfully transferred ACK
                                 send_opp_file_ack(fileName);
                                 mainActivity.addNodeToBundleNegotiationMapping(theBundle, device_Id);
+                                mainActivity.Bundles_queue.add(theBundle);
                             }
                             break;
 
@@ -226,13 +257,15 @@ public class WorkerThread extends Thread {
 
                             fileName = new String(packet.payload, 0, packet.getLength());
                             debug("[OPPORTUNISTIC] Got ACK for "+fileName, DEBUG);
-                            mainActivity.addNodeToBundleNegotiationMapping(mainActivity.getBundle(fileName), device_Id);
 
                             Bundle newBundle = mainActivity.getBundle(fileName);
                             if(newBundle.getDestination() == device_Id){
                                 newBundle.delivered();
+                                mainActivity.addBundleToQueue(newBundle);
                             }
-                            filesToSend.remove(newBundle);
+                            filesToSend.poll();
+                            mainActivity.addNodeToBundleNegotiationMapping(mainActivity.getBundle(fileName), device_Id);
+
                             sendOppFile();
                             break;
 
@@ -256,8 +289,9 @@ public class WorkerThread extends Thread {
                             break;
 
                         case TERMINATE:
-                            debug("Terminating Connection with "+device_Id, INFO);
+                            debug("[GOT TERMINATE PACKET] Terminating Connection with "+device_Id, INFO);
                             cancel();
+                            break;
 
                         default:
                             debug("Not a valid packet type " +packetType, DEBUG);
@@ -273,8 +307,8 @@ public class WorkerThread extends Thread {
                      */
                 if(gotNegotiation && negotiated
                         && filesToReceive.size() == 0 && filesToSend.size() == 0){
-
-                    terminateConn();
+                    debug("Thread job is done, kill the the thread",DEBUG);
+                    cancel();
                 }
             }
             catch(InterruptedException e){
@@ -290,26 +324,55 @@ public class WorkerThread extends Thread {
             }
         }
 
+        if(filesToReceive.size() > 0 || filesToSend.size() > 0) {
+            for (String bundleID : filesToReceive) {
+                Bundle theBundle = mainActivity.getBundle(bundleID);
+                if (theBundle != null) {
+                    File f = new File((MainActivity.rootDir + bundleID));
+                    if (f.exists()) {
+                        if (theBundle.getBytesReceived() > 0) {
+                            long time_recv = System.currentTimeMillis();
+                            theBundle.set_end_recv_time(time_recv);
+                            theBundle.addTransferTimeStamp(time_recv);
+                            mainActivity.Bundles_queue.add(theBundle);
+                        } else {
+                            removeTimeStamps(theBundle);
+                        }
+                    } else {
+                        mainActivity.removeBundle(theBundle.getBundleID());
+//                    mainActivity.
+                    }
+                }
+            }
 
-        for(Bundle theBundle : filesToReceive){
-            debug("[RECEIVING]"+theBundle.getFileName()+" will be removed", INFO);
-            File f = new File((MainActivity.rootDir + theBundle.getFileName()));
-            if(f.exists())
-                f.delete();
+            for (NegotiationReplyEntry bundleID : filesToSend) {
+                debug("[SENDING]" + bundleID.getBundleId() + " will be removed", INFO);
 
-            mainActivity.Bundles_repo.remove(theBundle);
-            mainActivity.Bundles_nodes_mapping.remove(theBundle);
-            mainActivity.Bundles_queue.remove(theBundle);
+//            mainActivity.removeNodeToBundleNegotiationMapping(theBundle, device_Id);
+            }
         }
-        for(Bundle theBundle : filesToSend){
-            debug("[SENDING]" + theBundle.getFileName() + " will be removed", INFO);
 
-            mainActivity.removeNodeToBundleNegotiationMapping(theBundle, device_Id);
-        }
-
-        mainActivity.switch_networks();
+        terminateConn();
     }
+    private void removeTimeStamps(Bundle theBundle){
+        ArrayList<Integer> nodes = theBundle.getNodes();
+        nodes.remove(nodes.size()-1);
 
+        ArrayList<Long> timeStamp = theBundle.getTransferTime();
+        timeStamp.remove(timeStamp.size()-1);
+
+        timeStamp = theBundle.getDisconnectTime();
+        timeStamp.remove(timeStamp.size()-1);
+        timeStamp.remove(timeStamp.size()-1);
+
+        timeStamp = theBundle.getConnectionEstablishment();
+        timeStamp.remove(timeStamp.size()-1);
+        timeStamp.remove(timeStamp.size()-1);
+
+        timeStamp = theBundle.getWaitingDelay();
+        timeStamp.remove(timeStamp.size()-1);
+        timeStamp.remove(timeStamp.size()-1);
+    }
 
     /**
      * Terminating connection
@@ -321,8 +384,6 @@ public class WorkerThread extends Thread {
         debug("Terminating connection", DEBUG);
         cancel();
         mainActivity.disconnect_time_end = System.currentTimeMillis();
-
-
     }
 
 
@@ -333,8 +394,7 @@ public class WorkerThread extends Thread {
         //=================Filling up Negotiation Packet=================
         for (int i = 0; i < mainActivity.Bundles_repo.size(); i++) {
             Bundle thebundle = mainActivity.Bundles_repo.get(i);
-            negotiationPacket.addBundle(thebundle.getFileName(), thebundle.isDelivered());
-
+            negotiationPacket.addBundle(thebundle.getBundleID(), thebundle.isDelivered());
         }
         //=================Filling up Negotiation Packet=================
 
@@ -354,87 +414,105 @@ public class WorkerThread extends Thread {
         }
     }
 
-
     /**
      * Read the negotiation packet for opportunistic file transfer
      * This function checks my bundle repository and will ask in the negotiation reply for
      * bundles it doesn't have
      * @param packet    The negotiation packet received
      */
-    private void process_opportunistic_negotiation(NegotiationPacket packet) {
-
+    private void process_opportunistic_negotiation(NegotiationPacket packet){
         ArrayList<String> bundleIds = packet.getBundleIds();
         ArrayList<Boolean> delivered = packet.getDelivered();
         NegotiationReplyPacket negotiationReplyPacket = new NegotiationReplyPacket();
         for(int i = 0; i < bundleIds.size(); i++){
-            //Get the bundle from my repository
             boolean isDelivered = delivered.get(i);
             String bundleId = bundleIds.get(i);
-            Bundle theBundle = mainActivity.getBundle(bundleId);
-//            NegotiationReplyPacket.NegotiationReplyEntry negotiationReplyEntry = new NegotiationReplyPacket()
-            //If the bundle sent in the negotiation has already reached its destination
-            //Check if I have the bundle in my repo:
-            //      If it exists then mark it as delivered
-            //      If it doesn't exist then add its ID and mark it as delivered, this would
-            //          allow me to share the bundle's status with other nodes
+            NegotiationReplyEntry negotiationReplyEntry;
+            Bundle theBundle =  mainActivity.getBundle(bundleId);
+
             if(isDelivered){
-                //if it doesn't exist in my bundle repo
-                if(theBundle == null){
-                    theBundle = new Bundle(bundleId, mainActivity.DEVICE_ID);
-                    theBundle.delivered();
-                    mainActivity.Bundles_repo.add(theBundle);
-                    negotiationReplyPacket.addBundle(bundleId, (byte)2);
 
+                if(theBundle != null){
+                    if(theBundle.isDelivered()){
+                        negotiationReplyEntry = new NegotiationReplyEntry
+                                (bundleId, negotiationReplyPacket.DONTSEND, 0);
+                        negotiationReplyPacket.addEntry(negotiationReplyEntry);
+                    }
+                    else{
+                        negotiationReplyEntry = new NegotiationReplyEntry
+                                (bundleId, negotiationReplyPacket.SENDMETADATA, 0);
+                        negotiationReplyPacket.addEntry(negotiationReplyEntry);
+
+                        debug("[process_opportunistic_negotiation]"+
+                                (mainActivity.removeBundle(bundleId)? "Removed ":"Didn't remove ")
+                                +bundleId, DEBUG);
+                    }
                 }
-                else{
-                    theBundle.delivered();
-                }
-                //Tell all other nodes about the status of the bundle
-                //TODO: Think about floods of updates
-                if(!mainActivity.Bundles_queue.contains(theBundle)){
-                    mainActivity.Bundles_queue.add(theBundle);
-                }
-
-                mainActivity.addNodeToBundleNegotiationMapping(theBundle, device_Id);
-            }
-            else{
-                if(theBundle == null){
-                    theBundle = new Bundle(bundleId, mainActivity.DEVICE_ID);
-                    debug("Will receive\n" + theBundle.toString(), INFO);
-
-                    negotiationReplyPacket.addBundle(bundleId, (byte)1);
-
-                    //Add the bundle to the list of bundles to be received
-                    filesToReceive.add(theBundle);
-                    //Add the bundle to the repository of bundles
-                    mainActivity.Bundles_repo.add(theBundle);
-                    //TODO: Check sanity of the coming statement, if i add it to the queue before
-                    //  receiving the bundle what will happen
-                    mainActivity.Bundles_queue.add(theBundle);
-                    mainActivity.Bundles_nodes_mapping.put(theBundle, new HashSet<Integer>());
-
-                }
-                else{
-                    negotiationReplyPacket.addBundle(bundleId, (byte)0);
-                    mainActivity.addNodeToBundleNegotiationMapping(theBundle, device_Id);
+                else {
+                    negotiationReplyEntry = new NegotiationReplyEntry
+                            (bundleId, negotiationReplyPacket.SENDMETADATA, 0);
+                    negotiationReplyPacket.addEntry(negotiationReplyEntry);
                 }
             }
-        }
+            else {
+                //The bundle exists
+                if (theBundle != null) {
+                    File f = new File((MainActivity.rootDir + theBundle.getBundleID()));
 
-        try {
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            ObjectOutput output = new ObjectOutputStream(bos);
+                    //Sanity check if the file exists or not, it should always exist
+                    if (f.exists()) {
+                        //if I have the whole bundle and more....don't send me the bundle
+                        if (f.length() >= theBundle.getBundleSize()) {
+                            negotiationReplyEntry = new NegotiationReplyEntry
+                                    (bundleId, negotiationReplyPacket.DONTSEND, 0);
+                            negotiationReplyPacket.addEntry(negotiationReplyEntry);
+                        }
+                        //I don't have the full bundle, so send me what is left
+                        else {
+                            negotiationReplyEntry = new NegotiationReplyEntry
+                                    (bundleId, negotiationReplyPacket.SEND, f.length());
+                            negotiationReplyPacket.addEntry(negotiationReplyEntry);
+                            debug("[process_opportunistic_negotiation] " +
+                                    "Will receive "+bundleId+" from offset "+f.length(), DEBUG);
+                            if(filesToReceive.size() == 0 ){
+                                theBundle.set_start_recv_time(System.currentTimeMillis());
+                                debug("[process_opportunistic_negotiation] " +
+                                        bundleId+" is the first bundle", DEBUG);
+                            }
+                            filesToReceive.add(theBundle.getBundleID());
+                        }
+                    }
+                    else{
+                        debug("[process_opportunistic_negotiation]"+f.getName()+" should exist", ERROR);
+                    }
+                }
+                else {
+                    negotiationReplyEntry = new NegotiationReplyEntry
+                            (bundleId, negotiationReplyPacket.SEND, 0);
+                    negotiationReplyPacket.addEntry(negotiationReplyEntry);
+                    debug("[process_opportunistic_negotiation] " +
+                            "Will receive "+bundleId+" from the beginning", DEBUG);
+                    filesToReceive.add(bundleId);
+                }
+            }
 
-            output.writeObject(negotiationReplyPacket);
+            try {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                ObjectOutput output = new ObjectOutputStream(bos);
 
-            byte[] objectToArray = bos.toByteArray();
+                output.writeObject(negotiationReplyPacket);
 
-            Packet outgoingPacket = new Packet(mainActivity.DEVICE_ID, device_Id, OPP_NEG_RPLY,0, objectToArray);
-            writeToNode(device_Id, outgoingPacket);
-        } catch (IOException e) {
-            e.printStackTrace();
+                byte[] objectToArray = bos.toByteArray();
+
+                Packet outgoingPacket = new Packet(mainActivity.DEVICE_ID, device_Id, OPP_NEG_RPLY,0, objectToArray);
+                writeToNode(device_Id, outgoingPacket);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
         }
     }
+
 
     /*                 opportunistic file ACK packet format
      * ----------------------------------------------------------------------------
@@ -451,49 +529,54 @@ public class WorkerThread extends Thread {
         byte[] filenameInBytes = fileName.getBytes();
         Packet packet = new Packet(mainActivity.DEVICE_ID, device_Id, OPP_FILE_ACK,
                 filenameInBytes.length, filenameInBytes);
-
+//        if(!filesToReceive.isEmpty()){
+//
+//        }
         writeToNode(device_Id, packet);
     }
 
-    private void process_opportunistic_negotiation_reply(NegotiationReplyPacket negotiationReplyPacket){
-        ArrayList<String> bundleIds = negotiationReplyPacket.getBundleIds();
-        ArrayList<Byte> shouldSendArray = negotiationReplyPacket.getSendIt();
 
-        int num_bundles = bundleIds.size();
-//        mainActivity.addNodeToBundleNegotiationMapping(device_Id);
+    private void process_opportunistic_negotiation_reply(NegotiationReplyPacket negotiationReplyPacket){
+
+        ArrayList<NegotiationReplyEntry> negotiationReplyEntries = negotiationReplyPacket.getNegotiationReplyEntries();
+
+        int num_bundles = negotiationReplyEntries.size();
+
         debug("Processing " + num_bundles + " bundles", INFO);
 
         for (int i = 0; i < num_bundles; i++) {
-//                    int destination = inputStream.readInt();    //Bundle Destination node ID
 
-//                int fileNameLength = inputStream.readInt();//File name length
-//                byte[] fileName_bytes = new byte[fileNameLength];
-//                inputStream.readFully(fileName_bytes);     //file name
-            String fileName = bundleIds.get(i);
-            byte shouldSend = shouldSendArray.get(i);
+
+            NegotiationReplyEntry entry = negotiationReplyEntries.get(i);
+            debug(entry.toString(), DEBUG);
+            String fileName = entry.getBundleId();
+            byte shouldSend = entry.getStatus();
+            long offset = entry.getOffset();
 
             debug("File name:"+fileName, DEBUG);
 
             Bundle theBundle = mainActivity.getBundle(fileName);
 
-            //Send meta-data and file data
-            if(shouldSend==1) {
-                //Sanity check, I should own that bundle at all times
-                if (theBundle != null) {
-                    debug("Will Send " + fileName + " bundle", DEBUG);
-                    filesToSend.add(theBundle);
-                } else
-                    debug("ERROR: there was a problem with negotiation", ERROR);
-            }
-            //Send meta-data only
-            else if(shouldSend == 2){
-                if(theBundle != null)
-                    send_meta_data(theBundle);
+            //If the negotiation reply ask not to send the bundle
+            if(shouldSend==negotiationReplyPacket.DONTSEND){
                 mainActivity.addNodeToBundleNegotiationMapping(theBundle, device_Id);
             }
-            //Do nothing, the peer has meta-data of the bundle
-            else if(shouldSend == 0){
+            else if(shouldSend==negotiationReplyPacket.SENDMETADATA){
+                send_meta_data(theBundle);
                 mainActivity.addNodeToBundleNegotiationMapping(theBundle, device_Id);
+            }
+            else{
+                if(offset > 0){
+                    debug("[process_opportunistic_negotiation_reply]" +
+                            " Will send "+entry.getBundleId()+" from "+offset, DEBUG);
+                    filesToSend.add(entry);
+                }
+                else{
+                    debug("[process_opportunistic_negotiation_reply]" +
+                            " Will send "+entry.getBundleId()+" from the beginning", DEBUG);
+//                    send_meta_data(theBundle);
+                    filesToSend.add(entry);
+                }
             }
         }
 
@@ -501,45 +584,72 @@ public class WorkerThread extends Thread {
 
     }
 
-    private void process_metadata(Bundle sentBundle){
-        Bundle theBundle = mainActivity.getBundle(sentBundle.getFileName());
-        if(theBundle != null){
-            theBundle.setSource(sentBundle.getSource());
-            theBundle.setDestination(sentBundle.getDestination());
-            theBundle.set_checkSum(sentBundle.getCheckSum());
 
-            theBundle.setNodes(sentBundle.getNodes());
-            theBundle.setDisconnectTime(sentBundle.getDisconnectTime());
-            theBundle.setTransferTime(sentBundle.getTransferTime());
-            theBundle.setConnectionEstablishment(sentBundle.getConnectionEstablishment());
-            theBundle.setWaitingDelay(sentBundle.getWaitingDelay());
+    /**
+     * Will take in a bundle set-up timestamps
+     * @param sentBundle
+     */
+    private void process_metadata(Bundle sentBundle) {
+        debug("[process_metadata] Got metadata for ",DEBUG);
+        debug(sentBundle.toString(), DEBUG);
+        Bundle theBundle = mainActivity.getBundle(sentBundle.getBundleID());
+        if(theBundle == null){
+            theBundle = new Bundle(sentBundle.getBundleID(), device_Id);
+            mainActivity.addBundle(theBundle);
+        }
+        else{
+            debug("[process_metadata] Bundle will be sent starting from a specific offset", INFO);
+            theBundle.addNode(mainActivity.DEVICE_ID);
+            theBundle.addTransferTimeStamp(System.currentTimeMillis());
+//            theBundle.addTransferTimeStamp(0);
 
-            if(!theBundle.isDelivered()) {
-                theBundle.addNode(mainActivity.DEVICE_ID);
-                theBundle.addTransferTimeStamp(0);
-                theBundle.addTransferTimeStamp(0);
+            theBundle.addDisconnectTimeStamp(sentBundle.getDisconnect_time_start());
+            theBundle.addDisconnectTimeStamp(sentBundle.getDisconnect_time_end());
 
-                theBundle.addDisconnectTimeStamp(sentBundle.getDisconnect_time_start());
-                theBundle.addDisconnectTimeStamp(sentBundle.getDisconnect_time_end());
+            theBundle.addConnectTimeStamp(sentBundle.getConnect_time_start());
+            theBundle.addConnectTimeStamp(sentBundle.getConnect_time_end());
 
-                theBundle.addConnectTimeStamp(sentBundle.getConnect_time_start());
-                theBundle.addConnectTimeStamp(sentBundle.getConnect_time_end());
+            theBundle.addWaitingTimeStamp(sentBundle.getScan_time_start());
+            theBundle.addWaitingTimeStamp(sentBundle.getScan_time_end());
+            return;
+        }
 
-                theBundle.addWaitingTimeStamp(sentBundle.getScan_time_start());
-                theBundle.addWaitingTimeStamp(sentBundle.getScan_time_end());
-            }
+        theBundle.setSource(sentBundle.getSource());
+        theBundle.setDestination(sentBundle.getDestination());
+        theBundle.set_checkSum(sentBundle.getCheckSum());
+        theBundle.setBundleSize(sentBundle.getBundleSize());
+        theBundle.setNodes(sentBundle.getNodes());
+        theBundle.setDisconnectTime(sentBundle.getDisconnectTime());
+        theBundle.setTransferTime(sentBundle.getTransferTime());
+        theBundle.setConnectionEstablishment(sentBundle.getConnectionEstablishment());
+        theBundle.setWaitingDelay(sentBundle.getWaitingDelay());
+
+        if(!sentBundle.isDelivered()) {
+            theBundle.addNode(mainActivity.DEVICE_ID);
+            theBundle.addTransferTimeStamp(System.currentTimeMillis());
+//            theBundle.addTransferTimeStamp(0);
+
+            theBundle.addDisconnectTimeStamp(sentBundle.getDisconnect_time_start());
+            theBundle.addDisconnectTimeStamp(sentBundle.getDisconnect_time_end());
+
+            theBundle.addConnectTimeStamp(sentBundle.getConnect_time_start());
+            theBundle.addConnectTimeStamp(sentBundle.getConnect_time_end());
+
+            theBundle.addWaitingTimeStamp(sentBundle.getScan_time_start());
+            theBundle.addWaitingTimeStamp(sentBundle.getScan_time_end());
+        }
+        else{
+            theBundle.delivered();
+            mainActivity.addBundleToQueue(theBundle);
         }
     }
+
     /**
      * Send meta-data of the bundle
      * @param theBundle     The bundle that I will send meta-data of
      */
     private void send_meta_data(Bundle theBundle){
-
         try {
-
-
-
             theBundle.setDisconnect_time_start(mainActivity.getDisconnect_time_start());
             theBundle.setDisconnect_time_end(mainActivity.getDisconnect_time_end());
 
@@ -566,27 +676,30 @@ public class WorkerThread extends Thread {
     }
 
     /**
-     * This function will send all the files available in the stack of files
-     * to be sent
+     * This function will send all the files available in the stack of files to-be-sent.
+     * This function Supports bundle transfer resume
      */
     public void sendOppFile(){
         if(!filesToSend.isEmpty()){
-            Bundle theBundle = filesToSend.peek();
+            NegotiationReplyEntry bundleEntry = filesToSend.peek();
+
+            Bundle theBundle = mainActivity.getBundle(bundleEntry.getBundleId());
             send_meta_data(theBundle);
 
-
-            String fileName = theBundle.getFileName();
+            String fileName = theBundle.getBundleID();
 
             try {
-                FileInputStream  inputStream = new FileInputStream((MainActivity.rootDir + fileName));
 
-                int FileSize = inputStream.available();
+                RandomAccessFile f = new RandomAccessFile((MainActivity.rootDir + fileName), "r");
+                f.seek(bundleEntry.getOffset());
+
+                long FileSize = f.length();
                 int chunkSize = 10240, len; //10 KB
 
                 byte[] buf = new byte[chunkSize];
-                debug("[OPPORTUNISTIC] Sending file "+fileName+" to "+device_Id, DEBUG);
-                mainActivity.debug("[OPPORTUNISTIC] Sending file "+fileName+" to "+device_Id);
-                while((len = inputStream.read(buf)) > 0){
+                debug("[OPPORTUNISTIC] Sending file "+fileName+" to "+device_Id, INFO);
+//                mainActivity.debug("[OPPORTUNISTIC] Sending file "+fileName+" to "+device_Id);
+                while((len = f.read(buf)) > 0){
                     DataPacket dataPacket = new DataPacket(fileName, FileSize, buf);
 
                     ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -594,13 +707,13 @@ public class WorkerThread extends Thread {
                     output.writeObject(dataPacket);
                     byte[] objectToArray = bos.toByteArray();
 
-                    Packet packet = new Packet(MainActivity.DEVICE_ID, device_Id, DATA, len, objectToArray);
+                    Packet packet = new Packet(mainActivity.DEVICE_ID, device_Id, DATA, len, objectToArray);
 
                     writeToNode(device_Id, packet);
                 }
 
-                debug("Done writing "+fileName, DEBUG);
-                mainActivity.debug("Done writing "+fileName);
+                debug("Done writing "+fileName, INFO);
+//                mainActivity.debug("Done writing "+fileName);
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
             } catch (IOException e){
@@ -629,6 +742,8 @@ public class WorkerThread extends Thread {
     }
 
     public void cancel(){
+        debug("{cancel}",DEBUG);
+
         threadIsAlive = false;
         try {
             outputStream.close();
@@ -641,5 +756,6 @@ public class WorkerThread extends Thread {
 
 
         mainActivity.removeNode(device_Id);
+        debug("{cancel}",DEBUG);
     }
 }
